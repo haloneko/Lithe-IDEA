@@ -58,6 +58,7 @@ enum AgentSessionStatusPresentation {
 }
 
 /// Session status entries shown before the context ring in the composer bar.
+/// The ring appears only after the Agent's first usage report.
 struct AgentSessionStatusView: View {
     @Environment(\.locale) private var locale
     let statistics: AgentSessionStatistics
@@ -66,7 +67,7 @@ struct AgentSessionStatusView: View {
 
     var body: some View {
         // Narrow panels first drop the speed (kept in the hover card), then the
-        // session summary, then token usage; context occupancy always stays.
+        // session summary, then token usage; context occupancy stays once reported.
         ViewThatFits(in: .horizontal) {
             entries(showsSession: true, showsRate: true, showsTokens: true)
             entries(showsSession: true, showsRate: false, showsTokens: true)
@@ -84,7 +85,8 @@ struct AgentSessionStatusView: View {
                 AgentTokenUsageView(tokens: tokens)
             }
             if showsContext {
-                AgentContextUsageView(usage: contextUsage, composition: statistics.modelCalls?.latestContext)
+                AgentContextUsageView(usage: contextUsage, composition: statistics.modelCalls?.latestContext,
+                                      isHiddenUntilReported: true)
             }
         }
         .fixedSize()
@@ -140,9 +142,7 @@ struct AgentSessionSummaryCard: View {
                 }
             }
         } footnote: {
-            if statistics.modelCalls != nil {
-                Text("Model calls are observed by the local proxy. Tool time is measured by Lithe and includes permission waits.")
-            } else {
+            if statistics.modelCalls == nil {
                 Text("Turn on Model call statistics in Agent settings and reconnect to see model calls, time to first token and output speed.")
             }
         }
@@ -200,9 +200,7 @@ struct AgentTokenUsageCard: View {
             if tokens.callsMissingUsage > 0 {
                 Text(String(format: AgentLocalization.string("%lld requests returned no usage, so these totals are a lower bound.", locale: locale),
                             tokens.callsMissingUsage))
-            } else if tokens.source == .modelCalls {
-                Text("Counts returned by the model provider for every request in this session.")
-            } else {
+            } else if tokens.source == .latestAgentTurn {
                 Text("Latest turn as reported by the Agent; its accounting scope depends on the Agent. Turn on Model call statistics for session totals.")
             }
         }

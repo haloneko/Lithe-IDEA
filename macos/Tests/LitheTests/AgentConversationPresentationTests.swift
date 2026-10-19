@@ -374,7 +374,7 @@ struct AgentConversationPresentationTests {
     }
 
     @Test
-    func commandSuggestionsKeepAWritingLineAtDefaultAndMinimumComposerHeights() throws {
+    func commandSuggestionsKeepTwoWritingLinesAtDefaultAndMinimumComposerHeights() throws {
         let commands = (0..<200).map {
             AgentCommand(name: "command-\($0)", description: "An upstream command with a long description", hint: nil)
         }
@@ -390,12 +390,10 @@ struct AgentConversationPresentationTests {
                         } composer: {
                             AgentComposerContent(files: files, commands: Array(commands.prefix(count)), highlightedIndex: 0,
                                                  onSelect: { _ in }, onRemoveFile: { _ in }, onFocus: {}) {
-                                Color.clear.frame(height: AgentComposerMetrics.contextHeight - 2)
-                            } editor: {
                                 TextField("Message the Agent", text: .constant("/"), axis: .vertical)
-                                    .textFieldStyle(.plain).font(.system(size: 13)).lineLimit(1...)
+                                    .textFieldStyle(.plain).font(LitheTheme.uiFont).lineLimit(AgentComposerMetrics.minimumWritingLines...)
                                     .background(AgentDraftFrameProbe { editor = $0 })
-                                    .padding(.horizontal, 8).padding(.vertical, 7)
+                                    .padding(.horizontal, 8).padding(.vertical, AgentComposerMetrics.writingVerticalInset)
                                     .frame(maxWidth: .infinity, alignment: .topLeading)
                             } toolbar: {
                                 Color.clear.frame(height: AgentComposerMetrics.toolbarHeight - 2)
@@ -418,11 +416,11 @@ struct AgentConversationPresentationTests {
                         #expect(frame.height > 0, "The actual text field must survive \(count) commands and \(files.count) attachments")
                         #expect(pane.insetBy(dx: -0.5, dy: -0.5).contains(frame), "The writing line must stay inside the sized pane")
                         if files.isEmpty, count == 0 {
-                            let inputHeight = pane.height - AgentComposerMetrics.bottomInset - (AgentComposerMetrics.contextHeight - 2)
-                            #expect(abs(inputHeight - 60) < 0.5, "A single writing line and toolbar stay compact across panel sizes")
+                            let inputHeight = pane.height - AgentComposerMetrics.bottomInset
+                            #expect(abs(inputHeight - 78) < 0.5, "Two writing lines and one toolbar stay compact without a top strip")
                         }
                         let writingScroll = try #require(enclosingScroll(of: input))
-                        #expect(writingScroll.bounds.height >= AgentComposerMetrics.writingLineHeight - 0.5)
+                        #expect(writingScroll.bounds.height >= AgentComposerMetrics.minimumWritingHeight - 0.5)
                         if count > 0 {
                             let list = try #require(commandScroll(in: host, excluding: input))
                             let listFrame = host.convert(list.bounds, from: list)
@@ -484,6 +482,9 @@ struct AgentConversationPresentationTests {
         #expect(AgentSubscriptionQuotaPresentation.duration(snapshot.windows[0].limitSeconds) == "7d")
         #expect(AgentSubscriptionQuotaPresentation.duration(snapshot.windows[1].limitSeconds) == "5h")
         #expect(snapshot.mostUsedWindow?.id == "weekly")
+        #expect(AgentSubscriptionQuotaPresentation.ringWindow(snapshot)?.id == "weekly",
+                "The compact ring follows the most used window, not the 5h one listed first")
+        #expect(AgentSubscriptionQuotaPresentation.ringWindow(nil) == nil)
         #expect(snapshot.windows[1].usedPercent == nil)
         #expect(!snapshot.isStale(at: Date(timeIntervalSince1970: 1800000100)))
         #expect(snapshot.isStale(at: Date(timeIntervalSince1970: 1800000121)))
@@ -761,23 +762,6 @@ struct AgentConversationPresentationTests {
     }
 
     @Test
-    func modelSearchUsesUpstreamNamesIDsAndGroupsWithoutChangingSelection() throws {
-        let option = try #require(AgentSessionConfigOption.parse([[
-            "id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "model-b",
-            "options": [["name": "Provider", "options": [["value": "model-a", "name": "Alpha"],
-                ["value": "model-b", "name": "Béta"]]]]
-        ]]).first)
-        let filter = { AgentSessionSelectorPresentation.filteredChoices(option, query: $0).map(\.id) }
-        #expect(filter("  ") == ["model-a", "model-b"])
-        #expect(filter("alpha") == ["model-a"])
-        #expect(filter("MODEL-B") == ["model-b"])
-        #expect(filter("beta") == ["model-b"])
-        #expect(filter("Provider") == ["model-a", "model-b"])
-        #expect(filter("absent") == [])
-        #expect(option.currentValue == "model-b")
-    }
-
-    @Test
     func unknownSessionSelectorsKeepUpstreamLabelsAndChoiceDescriptions() throws {
         let option = try #require(AgentSessionConfigOption.parse([[
             "id": "custom-mode", "name": "Custom control", "category": "custom", "type": "select", "currentValue": "custom-choice",
@@ -858,7 +842,9 @@ struct AgentConversationPresentationTests {
             if let scroll = view as? NSScrollView, scroll.hasVerticalScroller { return scroll }
             return view.subviews.lazy.compactMap { verticalScroll(in: $0) }.first
         }
+        var stage = 0
         func layout(until condition: () -> Bool) async throws {
+            stage += 1
             let deadline = ContinuousClock.now.advanced(by: .seconds(2))
             repeat {
                 await withCheckedContinuation { gate in
@@ -871,19 +857,21 @@ struct AgentConversationPresentationTests {
                 }
                 if condition() { return }
             } while ContinuousClock.now < deadline
-            try #require(condition(), "Native composer failed to reach its expected content size")
+            try #require(condition(), "Native composer stage \(stage) failed: writing=\(verticalScroll(in: host)?.bounds.height ?? -1), composer=\(composer?.bounds.height ?? -1)")
         }
-        try await layout { composer != nil && verticalScroll(in: host)?.bounds.height == 32 }
+        try await layout { composer != nil && abs((verticalScroll(in: host)?.bounds.height ?? 0) - 50) < 0.5 }
         let pane = try #require(composer)
         let scroll = try #require(verticalScroll(in: host))
         let emptyHeight = pane.bounds.height
-        #expect(emptyHeight < 140, "Empty production composer must start with one writing line")
+        #expect(emptyHeight < 140, "Empty production composer must reserve two writing lines")
         #expect(abs(pane.bounds.width - (editorLayout ? 880 : 1100)) < 1)
 
         draft.text = "First line\nSecond line\nThird line\nFourth line"
-        try await layout { scroll.bounds.height > 60 && pane.bounds.height > emptyHeight + 25 }
+        try await layout { scroll.bounds.height > 60 && pane.bounds.height > emptyHeight + 15 }
         let fourLineHeight = scroll.bounds.height
         #expect(fourLineHeight < 120, "Four lines should use their natural height")
+        #expect(abs((pane.bounds.height - emptyHeight) - (fourLineHeight - 50)) < 1,
+                "The composer must grow by the additional writing height above its two-line baseline")
 
         draft.text = (0..<80).map { "Line \($0): 输入越多，书写区会增高。" }.joined(separator: "\n")
         try await layout { scroll.bounds.height > fourLineHeight && (scroll.documentView?.bounds.height ?? 0) > 700 }
@@ -896,20 +884,20 @@ struct AgentConversationPresentationTests {
 
         draft.files = [try AgentFileReference(url: URL(fileURLWithPath: "/example/project/README.md"))]
         draft.text = ""
-        try await layout { abs(scroll.bounds.height - 32) < 0.5 && pane.bounds.height > emptyHeight + 25 }
+        try await layout { abs(scroll.bounds.height - 50) < 0.5 && pane.bounds.height > emptyHeight + 25 }
         #expect(abs(pane.bounds.height - emptyHeight - 34) < 1)
         draft.files = []
         try await layout { abs(pane.bounds.height - emptyHeight) < 0.5 }
 
-        draft.text = String(repeating: "输入内容应按当前窗口宽度换行。 Draft grows with its content. ", count: 4)
-        try await layout { scroll.bounds.height > 32 }
+        draft.text = String(repeating: "输入内容应按当前窗口宽度换行。 Draft grows with its content. ", count: 8)
+        try await layout { scroll.bounds.height > 50 }
         let wideHeight = scroll.bounds.height
         window.setContentSize(NSSize(width: 320, height: 400))
         try await layout { scroll.bounds.height > wideHeight + 15 && pane.bounds.width < 321 }
         #expect(abs(pane.bounds.width - (editorLayout ? 256 : 320)) < 1)
         #expect(pane.bounds.height + AgentComposerMetrics.splitTopInset <= 400 * 0.6 + 1)
         draft.text = ""
-        try await layout { abs(scroll.bounds.height - 32) < 0.5 && abs(pane.bounds.height - emptyHeight) < 1 }
+        try await layout { abs(scroll.bounds.height - 50) < 0.5 && abs(pane.bounds.height - emptyHeight) < 1 }
     }
 
     private func enclosingScroll(of view: NSView) -> NSScrollView? {
@@ -927,12 +915,14 @@ struct AgentConversationPresentationTests {
 private final class AgentGrowingComposerDraft: ObservableObject {
     @Published var text = ""
     @Published var files: [AgentFileReference] = []
+    @Published var fileMentionRevision: UUID?
 }
 
 private struct AgentGrowingComposerFixture: View {
     @ObservedObject var draft: AgentGrowingComposerDraft
     let editorLayout: Bool
     let onComposer: (NSView) -> Void
+    var findFiles: ((String) async -> [AgentFileMention])? = nil
 
     var body: some View {
         AgentConversationLayout {
@@ -940,6 +930,7 @@ private struct AgentGrowingComposerFixture: View {
         } composer: {
             AgentComposerView(agents: [], selectedAgent: nil, isResponding: false, isBlocked: false,
                 onSend: { _, _ in }, onCancel: {}, onSelectAgent: { _ in }, onOpenSettings: {}, onError: { _ in },
+                findFiles: findFiles, fileMentionRevision: draft.fileMentionRevision,
                 draftText: $draft.text, draftFiles: $draft.files)
                 .background(AgentDraftFrameProbe(onCreate: onComposer))
                 .modifier(AgentEditorColumn(isEditor: editorLayout))
@@ -958,4 +949,218 @@ private struct AgentDraftFrameProbe: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+extension AgentConversationPresentationTests {
+    @Test(arguments: ["@", "＠"], [ColorScheme.dark, .light])
+    func bareFileMentionOpensTheProductionComposerList(trigger: String, scheme: ColorScheme) async throws {
+        let draft = AgentGrowingComposerDraft()
+        let file = AgentFileMention(path: "Sources/示例.swift", url: URL(fileURLWithPath: "/example/project/Sources/示例.swift"))
+        var inventory: [AgentFileMention] = []
+        var queries: [String] = []
+        let host = NSHostingView(rootView: AgentGrowingComposerFixture(draft: draft, editorLayout: false,
+            onComposer: { _ in }, findFiles: { query in queries.append(query); return inventory })
+            .environment(\.colorScheme, scheme))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 400),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil; window.close() }
+
+        func input(in view: NSView) -> NSTextField? {
+            (view as? NSTextField) ?? view.subviews.lazy.compactMap { input(in: $0) }.first
+        }
+        func list() -> NSScrollView? {
+            guard let field = input(in: host) else { return nil }
+            return commandScroll(in: host, excluding: field)
+        }
+        func layout(until condition: () -> Bool) async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            repeat {
+                await withCheckedContinuation { gate in
+                    DispatchQueue.main.async {
+                        CFRunLoopRunInMode(CFRunLoopMode.defaultMode, 0, true)
+                        host.needsLayout = true
+                        host.layoutSubtreeIfNeeded()
+                        gate.resume()
+                    }
+                }
+                if condition() { return }
+            } while ContinuousClock.now < deadline
+            try #require(condition(), "The production composer did not update its file candidates")
+        }
+        // Exercise the real binding and task before the initial workspace scan finishes.
+        draft.text = trigger
+        try await layout { !queries.isEmpty }
+        #expect(queries == [""], "Typing @ must request the workspace inventory without a keyword")
+        inventory = [file]
+        draft.fileMentionRevision = UUID()
+        try await layout { list()?.bounds.height ?? 0 >= 26 }
+        #expect(queries == ["", ""], "Loaded files must appear without deleting and retyping @")
+        let suggestions = try #require(list(), "The production composer must display file candidates for a bare @")
+        #expect(suggestions.bounds.height >= 26)
+        #expect(draft.text == trigger && draft.files.isEmpty, "Opening candidates must not attach or send a file")
+
+        if let folder = ProcessInfo.processInfo.environment["LITHE_AGENT_FILE_MENTION_SCREENSHOTS"] {
+            let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try #require(bitmap.representation(using: .png, properties: [:])).write(to:
+                URL(fileURLWithPath: folder).appendingPathComponent("bare-\(trigger == "@" ? "ascii" : "fullwidth")-\(scheme).png"))
+        }
+    }
+
+    @Test(arguments: ["@", "＠", "review @"])
+    func bareFileMentionSupportsSelectionDismissalAndKeywordReplacement(draft: String) {
+        let first = AgentCommand.fileMention(AgentFileMention(path: "README.md", url: URL(fileURLWithPath: "/example/project/README.md")))
+        let second = AgentCommand.fileMention(AgentFileMention(path: "Sources/示例.swift", url: URL(fileURLWithPath: "/example/project/Sources/示例.swift")))
+        var completion = AgentCommandCompletion()
+        completion.draft = draft
+        completion.setFileMentions([first, second], for: "")
+        #expect(completion.suggestions(in: []) == [first, second])
+        #expect(completion.handle(.down, commands: [], isResponding: false) == .handled)
+        #expect(completion.handle(.tab, commands: [], isResponding: false) == .attach(second))
+        #expect(completion.draft == String(draft.dropLast()))
+        #expect(completion.suggestions(in: []) == nil)
+
+        completion.draft = draft
+        completion.setFileMentions([first, second], for: "")
+        #expect(completion.handle(.escape, commands: [], isResponding: true) == .handled)
+        #expect(completion.suggestions(in: []) == nil)
+        completion.draft += "Read"
+        #expect(completion.suggestions(in: []) == nil, "Default candidates cannot be selected for a newer keyword")
+        completion.setFileMentions([first], for: "Read")
+        #expect(completion.handle(.submit, commands: [], isResponding: false) == .attach(first))
+        #expect(completion.draft == String(draft.dropLast()))
+    }
+
+    @Test
+    func chineseInputTriggersOpenCommandsAndSkills() {
+        let commands = [AgentCommand(name: "review", description: "Review"),
+                        AgentCommand(name: "$pdf", description: "Read PDFs")]
+        for draft in ["¥", "￥", "$"] {
+            #expect(AgentCommand.suggestions(for: draft, in: commands)?.map(\.name) == ["$pdf"])
+        }
+        #expect(AgentCommand.suggestions(for: "、re", in: commands)?.map(\.name) == ["review"])
+        var completion = AgentCommandCompletion()
+        completion.draft = "¥p"
+        #expect(completion.handle(.tab, commands: commands, isResponding: false) == .handled)
+        #expect(completion.draft == "$pdf ")
+    }
+
+    @Test
+    func fileMentionsCompleteByRemovingTheQueryAndAttachingTheFile() throws {
+        #expect(AgentCommand.mentionQuery(in: "look at @App") == "App")
+        #expect(AgentCommand.mentionQuery(in: "＠") == "")
+        #expect(AgentCommand.mentionQuery(in: "look at @App ") == nil)
+        #expect(AgentCommand.mentionQuery(in: "mail user@host") == nil)
+
+        let file = AgentCommand.fileMention(AgentFileMention(path: "Sources/App.swift",
+                                                             url: URL(fileURLWithPath: "/w/Sources/App.swift")))
+        #expect(file.isFileMention && file.invocation == "@Sources/App.swift" && file.description == "Sources")
+        var completion = AgentCommandCompletion()
+        completion.draft = "fix @App"
+        #expect(completion.suggestions(in: []) == nil, "No rows until the file search returns")
+        completion.setFileMentions([file], for: "App")
+        #expect(completion.suggestions(in: [])?.map(\.name) == ["@Sources/App.swift"])
+        #expect(completion.handle(.submit, commands: [], isResponding: false) == .attach(file))
+        #expect(completion.draft == "fix ")
+        #expect(completion.fileMentions.isEmpty)
+    }
+
+    @Test
+    func fileMentionsForAnEarlierQueryCannotBeSelected() throws {
+        let file = AgentCommand.fileMention(AgentFileMention(path: "App.swift", url: URL(fileURLWithPath: "/w/App.swift")))
+        var completion = AgentCommandCompletion()
+        completion.draft = "@App"
+        completion.setFileMentions([file], for: "App")
+        completion.draft = "@Read"
+        #expect(completion.suggestions(in: []) == nil)
+        #expect(completion.handle(.tab, commands: [], isResponding: false) == .ignored)
+        #expect(completion.draft == "@Read")
+    }
+
+    @Test
+    func returnOnAFullyTypedFileNameAttachesInsteadOfSending() throws {
+        let readme = AgentCommand.fileMention(AgentFileMention(path: "README.md", url: URL(fileURLWithPath: "/w/README.md")))
+        var completion = AgentCommandCompletion()
+        completion.draft = "@README.md"
+        completion.setFileMentions([readme], for: "README.md")
+        #expect(completion.handle(.submit, commands: [], isResponding: false) == .attach(readme))
+        #expect(completion.draft.isEmpty)
+    }
+
+    @Test
+    func turnFooterShowsCompletionTimeAndCompactUsage() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "Asia/Shanghai"))
+        let now = try #require(calendar.date(from: DateComponents(year: 2026, month: 10, day: 16, hour: 15, minute: 30)))
+        let earlier = try #require(calendar.date(from: DateComponents(year: 2026, month: 10, day: 16, hour: 9, minute: 5)))
+        let yesterday = try #require(calendar.date(from: DateComponents(year: 2026, month: 10, day: 15, hour: 23, minute: 59)))
+        #expect(AgentTurnStatisticsPresentation.completionTime(earlier, now: now, calendar: calendar, locale: Locale(identifier: "en_US")) == "09:05")
+        #expect(AgentTurnStatisticsPresentation.completionTime(yesterday, now: now, calendar: calendar, locale: Locale(identifier: "en_US")) == "2026-10-15 23:59")
+
+        let start = ContinuousClock.Instant.now
+        var turn = AgentTurnStatistics(id: "turn", startedAt: start)
+        turn.finish(at: start.advanced(by: .seconds(62)), endingMessageID: "reply", usage: nil, completedAt: earlier)
+        #expect(turn.completedAt == earlier)
+        #expect(AgentTurnStatisticsPresentation.pill(turn, locale: Locale(identifier: "en_US")) == "1m 2s")
+        let usage = try #require(AgentTurnUsage.parse(["totalTokens": 25400, "inputTokens": 24000, "outputTokens": 1400]))
+        turn.finish(at: start.advanced(by: .seconds(62)), endingMessageID: "reply", usage: usage, completedAt: earlier)
+        #expect(AgentTurnStatisticsPresentation.pill(turn, locale: Locale(identifier: "en_US")) == "1m 2s · 25.4K tok")
+    }
+
+    @Test
+    func turnSummaryCarriesTheEndingReplyForItsCopyButton() {
+        let start = ContinuousClock.Instant.now
+        var turn = AgentTurnStatistics(id: "user-1", startedAt: start)
+        turn.finish(at: start, endingMessageID: "agent-1", usage: nil)
+        let items = AgentTranscriptItem.grouped([
+            AgentConversationMessage(id: "user-1", role: .user, text: "Hi"),
+            AgentConversationMessage(id: "agent-1", role: .agent, text: "Done.")
+        ], turns: [turn])
+        guard case .turnSummary(_, let reply) = items.last else {
+            Issue.record("expected a turn summary: \(items.map(\.id))")
+            return
+        }
+        #expect(reply == "Done.")
+        #expect(AgentTranscriptItem.repliesCopiedFromFooter([turn], searchText: "") == ["agent-1"])
+        #expect(AgentTranscriptItem.repliesCopiedFromFooter([turn], searchText: "Done").isEmpty,
+                "Search hides the footer, so the reply keeps its own copy button")
+    }
+
+    @Test
+    func pasteboardFilesAndImagesBecomeAttachmentsButTextPastes() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("lithe-agent-paste-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+
+        let file = URL(fileURLWithPath: "/tmp/report.pdf")
+        pasteboard.clearContents()
+        pasteboard.writeObjects([file as NSURL])
+        #expect(AgentPasteboardAttachment.read(from: pasteboard) == .files([file]))
+
+        let image = NSImage(size: NSSize(width: 4, height: 4))
+        image.lockFocus()
+        NSColor.red.setFill()
+        NSRect(x: 0, y: 0, width: 4, height: 4).fill()
+        image.unlockFocus()
+        pasteboard.clearContents()
+        pasteboard.writeObjects([image])
+        guard case .image(let png) = AgentPasteboardAttachment.read(from: pasteboard) else {
+            Issue.record("expected a pasted image")
+            return
+        }
+        #expect(png.starts(with: [0x89, 0x50, 0x4E, 0x47]))
+
+        pasteboard.clearContents()
+        pasteboard.setString("plain text", forType: .string)
+        #expect(AgentPasteboardAttachment.read(from: pasteboard) == nil)
+
+        let date = try #require(ISO8601DateFormatter().date(from: "2026-10-16T06:03:21Z"))
+        let utc = try #require(TimeZone(identifier: "UTC"))
+        #expect(AgentPastedImage.fileName(date: date, timeZone: utc, suffix: "ab12")
+                == "Pasted image 2026-10-16 06.03.21 ab12.png")
+        let losAngeles = try #require(TimeZone(identifier: "America/Los_Angeles"))
+        #expect(AgentPastedImage.fileName(date: date, timeZone: losAngeles, suffix: "ab12")
+                == "Pasted image 2026-10-15 23.03.21 ab12.png", "Names use local wall-clock time")
+    }
 }

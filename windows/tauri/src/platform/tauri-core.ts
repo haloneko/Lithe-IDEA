@@ -87,8 +87,25 @@ function safeJson(value: unknown): string {
 }
 
 
-export function invoke<T>(command: string, args?: InvokeArgs, options?: Partial<InvokeOptions> & { gitExecutionSource?: "user" | "background" | "unknown" }): Promise<T> {
-  const { gitExecutionSource = "unknown", ...forwardedOptions } = options ?? {};
+export function invoke<T>(
+  command: string,
+  args?: InvokeArgs,
+  options?: Partial<InvokeOptions> & {
+    gitExecutionSource?: "user" | "background" | "unknown";
+    // An adapter install reports npm transfer progress as `platform_invoke` events.
+    agentEvents?: Channel<unknown>;
+    /**
+     * Returns the shared Core response unchanged instead of the compatibility
+     * shape `adaptCoreResult` builds. Byte-faithful consumers need it: the diff
+     * adapter re-parses `git.diff` patches for display and strips CR and
+     * end-of-file markers.
+     */
+    rawCoreResult?: boolean;
+  },
+): Promise<T> {
+  const { gitExecutionSource = "unknown", agentEvents, rawCoreResult = false, ...forwardedOptions } = options ?? {};
+  const adapt = (value: unknown): T =>
+    rawCoreResult ? (value as T) : adaptCoreResult<T>(command, args as Record<string, any> | undefined, value);
   // Execution provenance is local metadata; Tauri requires headers only when native options are supplied.
   const nativeOptions: InvokeOptions | undefined = Object.keys(forwardedOptions).length
     ? { ...forwardedOptions, headers: forwardedOptions.headers ?? {} }
@@ -116,14 +133,16 @@ export function invoke<T>(command: string, args?: InvokeArgs, options?: Partial<
         workingDirectory: event.workingDirectory ?? String(payload.repoPath ?? payload.root ?? "") });
     };
     return tauriInvoke<unknown>("platform_invoke", { command, args: payload, gitEvents: channel, gitExecution: { ...gitExecutionPreferences(), source: gitExecutionSource } }, nativeOptions).then(
-      (value) => {
-        return adaptCoreResult<T>(command, args as Record<string, any> | undefined, value);
-      },
+      adapt,
       rejectAsError,
     );
   }
-  return tauriInvoke<unknown>("platform_invoke", { command, args: args ?? {} }, nativeOptions).then(
-    (value) => adaptCoreResult<T>(command, args as Record<string, any> | undefined, value),
+  return tauriInvoke<unknown>(
+    "platform_invoke",
+    agentEvents === undefined ? { command, args: args ?? {} } : { command, args: args ?? {}, agentEvents },
+    nativeOptions,
+  ).then(
+    adapt,
     rejectAsError,
   );
 }
@@ -168,7 +187,6 @@ function capabilityForCommand(command: string): BackendCapability | null {
   }
   if (
     command.includes("acp_") ||
-    command.includes("codex_") ||
     command.includes("ai_provider") ||
     command.includes("_chat") ||
     command === "get_available_agents"

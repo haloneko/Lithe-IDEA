@@ -87,7 +87,6 @@ classification() {
     local git_validation="${11:-false}"
     local java_jdt="${12:-false}"
     local ci_scope="${13:-pull_request}"
-    local swift_hosted="${14:-false}"
 
     printf 'swift=%s\n' "$swift"
     printf 'plugins=%s\n' "$plugins"
@@ -101,7 +100,6 @@ classification() {
     printf 'rust_comments=%s\n' "$rust_comments"
     printf 'metadata=%s\n' "$metadata"
     printf 'git_validation=%s\n' "$git_validation"
-    printf 'swift_hosted=%s\n' "$swift_hosted"
     printf 'ci_scope=%s\n' "$ci_scope"
 }
 
@@ -192,30 +190,33 @@ modify_macos_cache_save_action() {
 modify_metadata() { printf '%s\n' 'cask "lithe" do' '  version "1.0.0"' 'end' > Casks/lithe.rb; }
 modify_classifier() { printf '%s\n' '# classifier test change' >> scripts/classify-ci-changes.sh; }
 modify_java_jdt() { printf '%s\n' 'pub fn normalize() { let _ = 1; }' > rust/lithe-core/src/lsp/languages/java_tests.rs; }
+add_macos_java_source() { printf '%s\n' 'struct JavaLaunchArguments {}' > macos/Sources/Lithe/JavaLaunchArguments.swift; }
+add_macos_java_test() { printf '%s\n' 'struct EditorJavaViewportTests {}' > macos/Tests/LitheTests/EditorJavaViewportTests.swift; }
+add_shared_jdt_engine() {
+    mkdir -p rust/lithe-core/src/lsp/interface
+    printf '%s\n' 'pub fn initialize() {}' > rust/lithe-core/src/lsp/interface/engine.rs
+}
+add_bundled_jdt_manifest() {
+    mkdir -p third_party/jdtls
+    printf '%s\n' '{"version":"fixture"}' > third_party/jdtls/manifest.json
+}
+add_jdk_preparation_script() { printf '%s\n' '#!/bin/zsh' 'print -- jdk' > scripts/prepare-jdk.sh; }
+add_windows_java_source() { printf '%s\n' 'export const java = true;' > windows/tauri/src/java.ts; }
 modify_swift_and_database() {
     modify_swift_source
     modify_database_swift
-}
-modify_desktop_isolation_test() {
-    mkdir -p macos/Tests/LitheTestDesktopIsolationTests
-    printf '%s\n' 'struct DesktopIsolationTests {}' > macos/Tests/LitheTestDesktopIsolationTests/DesktopIsolationTests.swift
-}
-modify_desktop_isolation_runtime() {
-    mkdir -p macos/Tests/LitheTestDesktopIsolation
-    printf '%s\n' 'struct Isolation {}' > macos/Tests/LitheTestDesktopIsolation/Isolation.swift
 }
 rename_rust_to_markdown() {
     mkdir -p docs
     git mv rust/lithe-core/src/lib.rs docs/lib.md
 }
+add_chinese_swift_source() { printf '%s\n' 'struct Example {}' > 'macos/Sources/Lithe/示例 "quoted".swift'; }
 rename_swift_source() {
     git mv macos/Sources/Lithe/App.swift macos/Sources/Lithe/RenamedApp.swift
 }
 rename_swift_into_database_module() {
     git mv macos/Sources/Lithe/App.swift macos/Sources/LitheDatabaseModule/App.swift
 }
-modify_runner_selection() { printf '%s\n' 'export {};' > scripts/select-macos-ci-runners.mjs; }
-modify_runner_build_state() { printf '%s\n' '#!/bin/zsh' > scripts/reuse-macos-runner-build-state.sh; }
 modify_rust_bridge_verifier() { printf '%s\n' '#!/bin/zsh' > scripts/verify-rust-core-swift-bridge.sh; }
 
 assert_classification readme \
@@ -326,9 +327,29 @@ assert_classification windows-frontend \
 assert_classification windows-rust \
     "$(classification false false false false false false true true false false)" \
     modify_windows_rust
+# Swift Java adapters compile in the Swift lane; only the shared engine and
+# its Windows consumers select the separate real-JDT integration lane.
+assert_classification macos-java-source \
+    "$(classification true false false false false false false false false false)" \
+    add_macos_java_source
+assert_classification macos-java-test \
+    "$(classification true false false false false false false false false false)" \
+    add_macos_java_test
 assert_classification java-jdt \
     "$(classification false false false true false true true true false false false true)" \
     modify_java_jdt
+assert_classification shared-jdt-engine \
+    "$(classification false false false true false true true true false false false true)" \
+    add_shared_jdt_engine
+assert_classification bundled-jdt-manifest \
+    "$(classification true true true true true true true true false false true true)" \
+    add_bundled_jdt_manifest
+assert_classification jdk-preparation \
+    "$(classification false false false false false true false false false false false true)" \
+    add_jdk_preparation_script
+assert_classification windows-java-source \
+    "$(classification false false false false false false true false false false false true)" \
+    add_windows_java_source
 assert_classification download-cache-validator \
     "$(classification true true true true false true true true false false)" \
     modify_download_cache_validator
@@ -343,19 +364,6 @@ modify_macos_toolchain_action() {
     mkdir -p .github/actions/setup-macos-toolchain
     printf '%s\n' 'name: Toolchain fixture' > .github/actions/setup-macos-toolchain/action.yml
 }
-modify_shared_macos_runner_action() {
-    mkdir -p .github/actions/prepare-macos-ci-runner
-    printf '%s\n' 'name: Runner fixture' > .github/actions/prepare-macos-ci-runner/action.yml
-}
-modify_swift_build_budget() {
-    printf '%s\n' '#!/bin/zsh' > scripts/macos-swift-build-options.sh
-}
-assert_classification shared-macos-runner-action \
-    "$(classification true true true true false true false false false false true)" \
-    modify_shared_macos_runner_action
-assert_classification swift-build-budget \
-    "$(classification true true true true false true false false false false true)" \
-    modify_swift_build_budget
 assert_classification swift-version \
     "$(classification true true true true false true false false false false true)" \
     modify_swift_version
@@ -382,15 +390,28 @@ LITHE_CI_DRAFT_PULL_REQUEST=true assert_classification draft-keeps-linux-lanes \
     modify_rust_comment
 # A rename classifies both endpoints instead of selecting every lane: the old
 # Rust source still selects Rust Core, packaging, and Windows Rust.
-assert_classification desktop-isolation-test-runs-on-hosted \
-    "$(classification true false false false false false false false false false false false pull_request true)" \
-    modify_desktop_isolation_test
-assert_classification desktop-isolation-runtime-runs-on-hosted \
-    "$(classification true false false false false false false false false false false false pull_request true)" \
-    modify_desktop_isolation_runtime
-assert_classification ordinary-swift-test-may-use-mac-mini \
+modify_swift_and_rust() {
+    modify_swift_source
+    modify_rust_code
+}
+# Path lists live outside the fixture repository, which each case cleans.
+ONLY_PATHS_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEST_ROOT" "$ONLY_PATHS_DIR"' EXIT
+printf '%s\n' 'macos/Sources/Lithe/App.swift' > "$ONLY_PATHS_DIR/only-swift.txt"
+LITHE_CI_ONLY_PATHS="$ONLY_PATHS_DIR/only-swift.txt" assert_classification only-paths-limits-classification \
     "$(classification true false false false false false false false false false)" \
-    modify_swift_test
+    modify_swift_and_rust
+assert_classification chinese-swift-source-keeps-its-raw-path \
+    "$(classification true false false false false false false false false false)" \
+    add_chinese_swift_source
+printf '%s\n' 'macos/Sources/Lithe/示例 "quoted".swift' > "$ONLY_PATHS_DIR/only-chinese.txt"
+LITHE_CI_ONLY_PATHS="$ONLY_PATHS_DIR/only-chinese.txt" assert_classification only-paths-matches-raw-chinese-path \
+    "$(classification true false false false false false false false false false)" \
+    add_chinese_swift_source
+: > "$ONLY_PATHS_DIR/only-none.txt"
+LITHE_CI_ONLY_PATHS="$ONLY_PATHS_DIR/only-none.txt" assert_classification only-paths-empty-selects-nothing \
+    "$(classification false false false false false false false false false false)" \
+    modify_swift_and_rust
 LITHE_CI_SCOPE=post_merge assert_classification post-merge-builds-only-the-package \
     "$(classification false false false false false true false false false false false false post_merge)" \
     modify_swift_source
@@ -412,12 +433,6 @@ assert_classification rename-swift-source \
 assert_classification rename-swift-across-modules \
     "$(classification true false true false false true false false false false)" \
     rename_swift_into_database_module
-assert_classification runner-selection \
-    "$(classification true true true true false true false false false false true)" \
-    modify_runner_selection
-assert_classification runner-build-state \
-    "$(classification true true true true false true false false false false true)" \
-    modify_runner_build_state
 assert_classification rust-bridge-verifier \
     "$(classification false false false true false true false false false false)" \
     modify_rust_bridge_verifier

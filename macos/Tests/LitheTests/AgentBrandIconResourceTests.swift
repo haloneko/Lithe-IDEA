@@ -7,7 +7,7 @@ import Testing
 @Suite("Agent brand icon resources")
 struct AgentBrandIconResourceTests {
     @Test(arguments: ["Claude", "Codex"], [false, true])
-    func composerBrandMarksStayVisibleInNativeMenus(name: String, isDark: Bool) throws {
+    func composerBrandMarksStayVisibleInNativeMenus(name: String, isDark: Bool) async throws {
         let host = NSHostingView(rootView: AgentComposerView(
             agents: [.init(id: "example-agent", name: name)],
             selectedAgent: .init(id: "example-agent", name: name),
@@ -22,18 +22,15 @@ struct AgentBrandIconResourceTests {
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
-        defer { window.close() }
+        defer { window.contentView = nil; window.close() }
         window.contentView = host
         host.layoutSubtreeIfNeeded()
 
-        // Crop the real native Menu label, excluding neighboring controls and
-        // the text-field caret. No visible window or image baseline is required.
-        let region = NSRect(x: AgentComposerMetrics.horizontalInset,
-                            y: host.isFlipped ? host.bounds.height - AgentComposerMetrics.bottomInset - AgentComposerMetrics.contextHeight
-                                : AgentComposerMetrics.bottomInset,
-                            width: 24, height: AgentComposerMetrics.contextHeight)
-        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: region))
-        host.cacheDisplay(in: region, to: bitmap)
+        // The attachment button precedes the Agent selector. Crop its actual
+        // native control so that unrelated toolbar pixels cannot satisfy this test.
+        let selector = try await AgentNativeControlTestSupport.frame(of: "agent-composer-agent-selector", in: host)
+        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: selector))
+        host.cacheDisplay(in: selector, to: bitmap)
         var markPixels = 0
         for y in 0..<bitmap.pixelsHigh {
             for x in 0..<bitmap.pixelsWide {
@@ -49,6 +46,12 @@ struct AgentBrandIconResourceTests {
         #expect(markPixels > 10, "The native selector must show a visible orange Claude or contrasting Codex mark")
         #expect(try #require(AgentBrandIconLoader.image(name: name, size: 18)).isTemplate,
                 "Coloring the toolbar must not mutate the shared template used by other views")
+        if let folder = ProcessInfo.processInfo.environment["LITHE_AGENT_ACTIVITY_SCREENSHOTS"] {
+            let full = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: full)
+            try #require(full.representation(using: .png, properties: [:])).write(to:
+                URL(fileURLWithPath: folder).appendingPathComponent("composer-brand-\(name)-\(isDark ? "dark" : "light").png"))
+        }
     }
 
     @Test

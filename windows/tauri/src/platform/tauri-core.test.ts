@@ -9,7 +9,7 @@ mock.module("@tauri-apps/api/core", () => ({
   invoke: tauriInvoke,
 }));
 
-const { HostCommandError, invoke, isPlatformDispatcherCommand } = await import("./tauri-core");
+const { Channel, HostCommandError, invoke, isPlatformDispatcherCommand } = await import("./tauri-core");
 
 beforeEach(() => {
   tauriInvoke.mockClear();
@@ -121,6 +121,51 @@ test("explicit automatic provenance is forwarded separately from native invoke o
   expect(calls[0]![1].gitExecution?.source).toBe("background");
   expect(calls[0]![1].gitEvents).toBeDefined();
   expect(calls[0]![2]).toBeUndefined();
+});
+
+test("an adapter install forwards its progress channel to the platform dispatcher", async () => {
+  const agentEvents = new Channel<unknown>();
+  await invoke(
+    "agent.install",
+    { dataDirectory: "C:/fixture/data", agentId: "codex-acp" },
+    { agentEvents },
+  );
+  const calls = tauriInvoke.mock.calls as unknown as [
+    string,
+    { command?: string; agentEvents?: unknown; gitEvents?: unknown },
+    unknown,
+  ][];
+  expect(calls[0]![0]).toBe("platform_invoke");
+  expect(calls[0]![1].command).toBe("agent.install");
+  expect(calls[0]![1].agentEvents).toBe(agentEvents);
+  // An install progress channel is not a Git console channel.
+  expect(calls[0]![1].gitEvents).toBeUndefined();
+});
+
+test("a command without a progress channel keeps the dispatcher payload unchanged", async () => {
+  await invoke("agent.status", { dataDirectory: "C:/fixture/data" });
+  const calls = tauriInvoke.mock.calls as unknown as [string, unknown][];
+  expect(calls[0]![1]).toEqual({
+    command: "agent.status",
+    args: { dataDirectory: "C:/fixture/data" },
+  });
+});
+
+test("a raw Core result bypasses the compatibility adapter but keeps Git provenance", async () => {
+  // The diff adapter strips CR and end-of-file markers from `git.diff`; the
+  // byte-faithful rollback channel must read the patch exactly as Core sent it.
+  const core = { patch: "@@ -1 +1 @@\n-a\r\n+b\r\n\\ No newline at end of file\n", exitCode: 0, hasDecodingLoss: false };
+  tauriInvoke.mockImplementationOnce((async () => core) as never);
+  const raw = await invoke("git.diff", { root: "C:/fixture/project", pathspecs: ["a.txt"] }, { rawCoreResult: true });
+  expect(raw).toBe(core);
+  const calls = tauriInvoke.mock.calls as unknown as [string, { gitEvents?: unknown }, unknown][];
+  expect(calls[0]![1].gitEvents).toBeDefined();
+  // The option is local metadata, never forwarded as native invoke options.
+  expect(calls[0]![2]).toBeUndefined();
+
+  tauriInvoke.mockImplementationOnce((async () => core) as never);
+  const adapted = await invoke<unknown>("git.diff", { root: "C:/fixture/project", pathspecs: ["a.txt"] });
+  expect(Array.isArray(adapted)).toBe(true);
 });
 
 test("native headers survive Git provenance forwarding", async () => {

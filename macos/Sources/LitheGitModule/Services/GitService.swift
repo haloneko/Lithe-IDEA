@@ -16,6 +16,7 @@ package protocol GitOperations: Sendable {
     func stepWorkspaceCommit(_ session: GitWorkspaceCommitSession) -> Result<GitWorkspaceCommitSession, GitWorkspaceCommitFailure>
 
     func consolePresentation(_ request: GitConsolePresentationRequest) -> GitConsolePresentation?
+    func executableResolution() -> Result<GitExecutableResolution, GitFetchFailure>
     func executionSettings(_ request: GitConfigurationEdit, save: Bool) -> Result<GitExecutionSettingsSnapshot, GitFetchFailure>
     func remoteURL(at rootURL: URL, remote: String) -> String?
     func answerAuthentication(requestID: String, answer: String?) -> Bool
@@ -139,6 +140,8 @@ package protocol GitOperations: Sendable {
     func rebaseCurrentBranch(onto reference: GitReference, at rootURL: URL) -> GitProcessResult?
     func checkoutAndRebase(_ reference: GitReference, at rootURL: URL) -> GitProcessResult?
     func updateCurrentBranch(at rootURL: URL, strategy: GitPullStrategy) -> GitProcessResult?
+    /// Fast-forwards a non-current local branch from its upstream without switching HEAD.
+    func updateBranch(_ reference: GitReference, at rootURL: URL) -> GitProcessResult?
     func pullRemoteReference(
         _ reference: GitReference,
         strategy: GitPullStrategy,
@@ -192,6 +195,7 @@ package extension GitOperations {
     func snapshot(at rootURL: URL, repositoryRoots: [URL]) -> GitSnapshot? { snapshot(at: rootURL) }
 
     func consolePresentation(_ request: GitConsolePresentationRequest) -> GitConsolePresentation? { nil }
+    func executableResolution() -> Result<GitExecutableResolution, GitFetchFailure> { .failure(GitFetchFailure("Git executable resolution is unavailable.")) }
     func executionSettings(_ request: GitConfigurationEdit, save: Bool) -> Result<GitExecutionSettingsSnapshot, GitFetchFailure> { .failure(GitFetchFailure("Git configuration inspection is unavailable.")) }
     func remoteURL(at rootURL: URL, remote: String) -> String? { nil }
     func answerAuthentication(requestID: String, answer: String?) -> Bool { false }
@@ -228,6 +232,7 @@ package extension GitOperations {
     func createHistoryRecoveryBranch(named name: String, reference: String, at rootURL: URL) -> GitProcessResult? { nil }
     func setUpstream(branch: GitReference, to upstream: GitReference, at rootURL: URL) -> GitProcessResult? { nil }
     func unsetUpstream(branch: GitReference, at rootURL: URL) -> GitProcessResult? { nil }
+    func updateBranch(_ reference: GitReference, at rootURL: URL) -> GitProcessResult? { nil }
     func exportPatch(at rootURL: URL, source: GitPatchSource, paths: [String], base: String?, target: String?, metadataOnly: Bool) -> Result<GitPatchExport, GitPatchFailure> {
         .failure(GitPatchFailure("Patch export is unavailable."))
     }
@@ -603,6 +608,10 @@ package struct GitService: Sendable {
         return await Task.detached(priority: .userInitiated) {
             GitExecutionContext.$current.withValue(context) { operations.executionSettings(request, save: save) }
         }.value
+    }
+    func executableResolution() async -> Result<GitExecutableResolution, GitFetchFailure> {
+        let operations = self.operations
+        return await Task.detached(priority: .userInitiated) { operations.executableResolution() }.value
     }
     func remoteURL(at rootURL: URL, remote: String) async -> String? {
         let operations = self.operations
@@ -1004,6 +1013,10 @@ package struct GitService: Sendable {
         strategy: GitPullStrategy = .ffOnly
     ) async -> CommandResult {
         await command(at: repositoryRoot) { $0.updateCurrentBranch(at: repositoryRoot, strategy: strategy) }
+    }
+
+    func updateBranch(_ reference: GitReference, at repositoryRoot: URL) async -> CommandResult {
+        await command(at: repositoryRoot) { $0.updateBranch(reference, at: repositoryRoot) }
     }
 
     func pullRemoteReference(
